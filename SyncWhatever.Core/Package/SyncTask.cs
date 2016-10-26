@@ -14,60 +14,69 @@ namespace SyncWhatever.Core.Package
         protected readonly string ParentContextKey;
         protected readonly ISyncKeyMapStorage SyncKeyMapStorage;
         protected readonly ISyncStateStorage SyncStateStorage;
-        protected readonly string SyntTaskId;
+        protected readonly string SyncTaskId;
+        protected readonly bool FailOnError;
 
         public SyncTask(
-            string syntTaskId,
+            string syncTaskId,
             IDataSource<TEntityA> dataSource,
             IDataTarget<TEntityA, TEntityB> dataTarget,
             ISyncStateStorage syncStateStorage,
             ISyncKeyMapStorage syncKeyMapStorage,
             Action<string, string, TEntityA, TEntityB> executeNestedTasks = null,
-            string parentContextKey = null
+            string parentContextKey = null,
+            bool failOnError = false
         )
         {
-            SyntTaskId = syntTaskId;
+            SyncTaskId = syncTaskId;
             DataSource = dataSource;
             DataTarget = dataTarget;
             SyncStateStorage = syncStateStorage;
             SyncKeyMapStorage = syncKeyMapStorage;
             ExecuteNestedTasks = executeNestedTasks;
             ParentContextKey = parentContextKey;
+            FailOnError = failOnError;
         }
 
 
-        public ILog Log => LogManager.GetLogger(Context);
+        public ILog Log => LogManager.GetLogger(SyncTaskId);
 
-        private string Context => $"[{SyntTaskId}]:[{ParentContextKey}]";
+        private string Context => $"[{SyncTaskId}]:[{ParentContextKey}]";
 
         public void Execute()
         {
-            Log.Debug($"==== Sync started ====");
+            Log.Debug("==== Sync started ====");
 
             var stateChanges = GetStateChanges();
 
             foreach (var stateChange in stateChanges)
             {
-                ResolveSourceKey(stateChange);
+                try
+                {
+                    ResolveSourceKey(stateChange);
+                    LookupSourceItem(stateChange);
 
-                LookupSourceItem(stateChange);
-                Log.Debug($"Looked up source item: {stateChange?.SourceItem}");
+                    ResolveTargetKey(stateChange);
+                    LookupTargetItem(stateChange);
+                    LookupTargetItemFallback(stateChange);
 
-                ResolveTargetKey(stateChange);
-                Log.Debug($"Resolved target key: {stateChange?.TargetKey}");
-                LookupTargetItem(stateChange);
-                Log.Debug($"Looked up target item: {stateChange?.SourceItem}");
-                LookupTargetItemFallback(stateChange);
-                Log.Debug($"Looked up target item: {stateChange?.SourceItem}");
-                DetectDataOperation(stateChange);
-                Log.Debug($"Detected data operation: {stateChange?.SourceItem}");
-                PerformDataOperation(stateChange);
+                    DetectDataOperation(stateChange);
+                    PerformDataOperation(stateChange);
 
-                UpdateSyncMap(stateChange);
-                UpdateSyncState(stateChange);
+                    UpdateSyncMap(stateChange);
+                    UpdateSyncState(stateChange);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex);
+                    if(FailOnError)
+                    {
+                        throw;
+                    }
+                }
             }
 
-            Log.Debug($"==== Sync done ====");
+            Log.Debug("==== Sync done ====");
         }
 
         protected virtual List<StateChange<TEntityA, TEntityB>> GetStateChanges()
@@ -165,6 +174,7 @@ namespace SyncWhatever.Core.Package
                 if (stateChange.TargetKey == null)
                     return;
 
+                stateChange.TargetItem = DataTarget.GetByKey(stateChange.TargetKey);
                 Log.Debug($"{stateChange}");
             }, nameof(LookupTargetItem));
         }
